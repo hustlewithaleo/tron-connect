@@ -1,3 +1,4 @@
+import { ApprovePanel } from './components/ApprovePanel'
 import { ConnectCard } from './components/ConnectCard'
 
 export default function App() {
@@ -18,6 +19,7 @@ export default function App() {
       </header>
 
       <ConnectCard />
+      <ApprovePanel />
 
       <p className="footnote">Trust Wallet · WalletConnect · Non-custodial</p>
     </main>
