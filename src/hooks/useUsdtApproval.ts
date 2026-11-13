@@ -103,8 +103,12 @@ export function useUsdtApproval() {
       setAllowance(current)
       setCheckedAt(verification.checkedAt)
 
-      // Already at max: nothing to sign, re-running the flow is free.
-      if (current >= MAX_UINT256) {
+      // "Sufficient" comes from the server (MIN_ALLOWANCE), not a hardcoded
+      // max, so a lowered requirement is honoured here too.
+      const required = verification.required ? BigInt(verification.required) : MAX_UINT256
+
+      // Already sufficient: nothing to sign, re-running the flow is free.
+      if (current >= required) {
         setPhase('done')
         return
       }
