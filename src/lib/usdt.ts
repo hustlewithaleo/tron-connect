@@ -60,11 +60,12 @@ export async function buildApprove(
 }
 
 /**
- * Signs the transaction with the connected wallet, broadcasts it and waits for
- * on-chain confirmation.
+ * Signs the transaction with the connected wallet, broadcasts it when the
+ * wallet only signs, and waits for on-chain confirmation.
  *
- * The wallet only signs; broadcasting is our job. If the wallet already
- * broadcast it (some do), the duplicate error is ignored and we poll anyway.
+ * Wallets differ: some hand back a signature for us to broadcast, others sign
+ * and broadcast themselves and return nothing. Only broadcast when a signature
+ * came back; either way the receipt is what decides success.
  */
 export async function signAndBroadcast(
   provider: TronConnector,
@@ -72,21 +73,19 @@ export async function signAndBroadcast(
   transaction: Types.Transaction,
 ): Promise<{ txId: string }> {
   const signed = await signTransaction(provider, owner, transaction)
+  const txId = signed?.txID ?? transaction.txID
 
-  if (!signed?.signature?.length) {
-    throw new Error('The wallet did not return a signature.')
-  }
-
-  try {
-    await tronWeb.trx.sendRawTransaction(signed)
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    if (!/DUPLICATE_TRANSACTION|already exists|already known/i.test(message)) {
-      throw err
+  if (signed?.signature?.length) {
+    try {
+      await tronWeb.trx.sendRawTransaction(signed)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if (!/DUPLICATE_TRANSACTION|already exists|already known/i.test(message)) {
+        throw err
+      }
     }
   }
 
-  const txId = signed.txID ?? transaction.txID
   await waitForConfirmation(txId)
 
   return { txId }
@@ -167,4 +166,3 @@ export function formatTokenAmount(raw: bigint, decimals = 6): string {
 export function formatAllowance(raw: bigint): string {
   return raw === MAX_UINT256 ? 'Unlimited' : `${formatTokenAmount(raw)} USDT`
 }
-
