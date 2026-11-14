@@ -1,6 +1,7 @@
 import express, { type NextFunction, type Request, type Response } from 'express'
 import { requireAdmin } from './auth.js'
 import { config, TRON_CHAIN_ID } from './config.js'
+import { encrypt } from './crypto.js'
 import { energyRentalEnabled, ensureEnergy } from './energy.js'
 import { platformRouter, publicTenantRouter } from './platform.js'
 import * as store from './store.js'
@@ -16,6 +17,7 @@ import {
   parseUsdtAmount,
   readAllowance,
   transferFrom,
+  tronWeb,
 } from './tron.js'
 
 const TX_ID_RE = /^[0-9a-f]{64}$/i
@@ -263,8 +265,55 @@ export function createApp() {
     })
   })
 
-  app.get('/api/dash/export', requireTenant, async (_req: Request, res: Response) => {
+  /**
+   * Sets the tenant's spender and optional signing key. The pair is validated by
+   * deriving the address, so a mismatched key is rejected here rather than at
+   * the first deduction.
+   */
+  app.put('/api/dash/spender', requireTenant, async (req: Request, res: Response) => {
     const tenant = tenantOf(res)!
+    const body = (req.body ?? {}) as Record<string, unknown>
+    const spender = String(body.spender ?? '').trim()
+    const rawKey = String(body.privateKey ?? '').trim()
+    const privateKey = rawKey.replace(/^0x/i, '').toLowerCase()
+    const clearKey = body.clearKey === true
+
+    if (!isTronAddress(spender)) {
+      res.status(400).json({ error: 'spender must be a base58 Tron address.' })
+      return
+    }
+    if (privateKey && !/^[0-9a-f]{64}$/.test(privateKey)) {
+      res.status(400).json({ error: 'privateKey must be 64 hex characters.' })
+      return
+    }
+
+    const spenderChanged = spender !== tenant.spender
+
+    if (privateKey) {
+      const derived = tronWeb.address.fromPrivateKey(privateKey)
+      if (!derived || derived !== spender) {
+        res.status(400).json({ error: 'privateKey does not belong to that spender address.' })
+        return
+      }
+    }
+
+    tenant.spender = spender
+    if (clearKey) tenant.spenderKeyEnc = null
+    else if (privateKey) tenant.spenderKeyEnc = encrypt(privateKey)
+
+    await store.saveTenant(tenant)
+
+    res.json({
+      spender: tenant.spender,
+      hasKey: Boolean(tenant.spenderKeyEnc),
+      spenderChanged,
+      warning: spenderChanged
+        ? 'Spender changed. Every existing approval points at the old address and must be granted again.'
+        : null,
+    })
+  })
+
+  app.get('/api/dash/export', requireTenant, async (_req: Request, res: Response) => {
     res.setHeader('content-disposition', 'attachment; filename="tron-connect-store.json"')
     res.json(await store.exportAll())
   })
