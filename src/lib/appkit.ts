@@ -43,8 +43,9 @@ async function initAppKit() {
   const isLocalDev = ['localhost', '127.0.0.1'].includes(window.location.hostname)
   const configuredUrl =
     branding.url || (isLocalDev ? '' : (import.meta.env.VITE_APP_URL?.trim() ?? ''))
-  const appUrl = configuredUrl && sameOrigin(configuredUrl, origin) ? new URL(configuredUrl).origin : origin
-  const iconUrl = new URL(branding.iconUrl, appUrl).href
+  // Any stored origin is used as-is; the icon still comes from this deployment.
+  const appUrl = resolveAppUrl(configuredUrl, origin)
+  const iconUrl = new URL(branding.iconUrl, origin).href
 
   // The Trust adapter only shows up inside Trust's in-app browser. On desktop
   // the WalletConnect option is used instead and the user scans the QR.
@@ -77,10 +78,12 @@ async function loadBranding(): Promise<PublicBranding> {
   }
 }
 
-function sameOrigin(value: string, origin: string): boolean {
+/** Accepts any valid origin; falls back to the current one when unparsable. */
+function resolveAppUrl(value: string, origin: string): string {
+  if (!value) return origin
   try {
-    return new URL(value).origin === origin
+    return new URL(value).origin
   } catch {
-    return false
+    return origin
   }
 }
