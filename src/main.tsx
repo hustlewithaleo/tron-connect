@@ -1,17 +1,28 @@
 import { createRoot } from 'react-dom/client'
 import { ensureAppKit } from './lib/appkit'
+import { parseRoute } from './lib/routes'
 import './style.css'
+import './dash.css'
 
-// `/admin` is a separate view served by the same SPA.
-const isAdmin = window.location.pathname.replace(/\/+$/, '') === '/admin'
+const route = parseRoute(window.location.pathname)
 
 async function start() {
-  // AppKit metadata (name/icon/url) is editable in the admin panel, so it must
-  // be loaded before AppKit is created and before any component renders.
   await ensureAppKit()
 
-  const { default: Root } = isAdmin ? await import('./AdminApp') : await import('./App')
-  createRoot(document.getElementById('root')!).render(<Root />)
+  const { default: Root } =
+    route.name === 'admin'
+      ? await import('./AdminApp')
+      : route.name === 'platform'
+        ? await import('./Platform')
+        : route.name === 'dash'
+          ? await import('./Dashboard')
+          : route.name === 'tenant'
+            ? await import('./TenantPage')
+            : await import('./App')
+
+  createRoot(document.getElementById('root')!).render(
+    route.name === 'tenant' ? <Root tenantId={route.id} /> : <Root />,
+  )
 }
 
 start().catch((err) => {
