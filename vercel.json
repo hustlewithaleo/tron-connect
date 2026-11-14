@@ -16,6 +16,18 @@
     {
       "source": "/admin",
       "destination": "/index.html"
+    },
+    {
+      "source": "/platform",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/dash",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/t/(.*)",
+      "destination": "/index.html"
     }
   ]
 }
