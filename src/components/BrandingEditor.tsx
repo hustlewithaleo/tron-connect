@@ -189,10 +189,10 @@ export function BrandingEditor({ token }: { token: string }) {
             Leave empty to use the origin the site is opened on.
           </p>
 
-          <p className="warning">
-            The name, icon and URL identify your dApp to users. Do not impersonate a wallet or
-            another service. The URL must match a real origin or the verified-domain badge will
-            fail.
+<p className="warning">
+            The name, icon and URL identify your dApp to users. Any http(s) origin is accepted —
+            but the verified-domain badge only appears when the URL matches the origin the site
+            is actually served from.
           </p>
 
           {error && <p className="error">{error}</p>}
