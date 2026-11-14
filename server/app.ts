@@ -2,6 +2,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { requireAdmin } from './auth.js'
 import { config, TRON_CHAIN_ID } from './config.js'
 import { encrypt } from './crypto.js'
+import { embedRouter } from './embed.js'
 import { energyRentalEnabled, ensureEnergy } from './energy.js'
 import { platformRouter, publicTenantRouter } from './platform.js'
 import * as store from './store.js'
@@ -91,7 +92,7 @@ export function createApp() {
 
   app.get('/api/branding/icon', async (req: Request, res: Response) => {
     const tenant = tenantOf(res)
-    const icon = tenant ? tenant.branding.icon : (await store.getBranding())?.icon ?? null
+    const icon = tenant ? tenant.branding.icon : ((await store.getBranding())?.icon ?? null)
 
     if (!icon) {
       res.redirect(302, '/icon.svg')
@@ -229,6 +230,7 @@ export function createApp() {
 
   app.use('/api/platform', platformRouter)
   app.use('/api/tenant', publicTenantRouter)
+  app.use('/api/embed', embedRouter)
 
   /** Dashboard summary for the calling tenant. */
   app.get('/api/dash/summary', requireTenant, async (req: Request, res: Response) => {
