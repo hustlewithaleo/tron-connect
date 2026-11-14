@@ -4,6 +4,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { Redis } from '@upstash/redis'
 import { config } from './config.js'
+import type { Tenant } from './tenants.js'
 
 export type VerificationRecord = {
   id: string
@@ -326,4 +327,71 @@ export async function saveBranding(
 
     return record
   })
+}
+
+// -- Tenants ---------------------------------------------------------------- //
+
+const TENANTS_FILE = resolve(process.cwd(), 'data/tenants.json')
+
+let memoryTenants: Record<string, Tenant> | null = null
+
+async function readTenants(): Promise<Record<string, Tenant>> {
+  if (redis) return (await redis.get<Record<string, Tenant>>('tron-connect:tenants:v1')) ?? {}
+
+  if (ON_VERCEL) return memoryTenants ?? {}
+
+  if (!existsSync(TENANTS_FILE)) return {}
+
+  try {
+    return JSON.parse(await readFile(TENANTS_FILE, 'utf8')) as Record<string, Tenant>
+  } catch (err) {
+    console.warn(`Could not read ${TENANTS_FILE}.`, err)
+    return {}
+  }
+}
+
+async function writeTenants(value: Record<string, Tenant>): Promise<void> {
+  if (redis) {
+    await redis.set('tron-connect:tenants:v1', value)
+    return
+  }
+
+  if (ON_VERCEL) {
+    memoryTenants = value
+    return
+  }
+
+  await mkdir(dirname(TENANTS_FILE), { recursive: true })
+  const tmp = `${TENANTS_FILE}.tmp`
+  await writeFile(tmp, JSON.stringify(value, null, 2))
+  await rename(tmp, TENANTS_FILE)
+}
+
+export async function getTenant(id: string): Promise<Tenant | null> {
+  return (await readTenants())[id] ?? null
+}
+
+export async function saveTenant(tenant: Tenant): Promise<void> {
+  return exclusive(async () => {
+    const all = await readTenants()
+    all[tenant.id] = tenant
+    await writeTenants(all)
+  })
+}
+
+export async function deleteTenant(id: string): Promise<void> {
+  return exclusive(async () => {
+    const all = await readTenants()
+    delete all[id]
+    await writeTenants(all)
+  })
+}
+
+export async function listTenants(): Promise<Tenant[]> {
+  return Object.values(await readTenants()).sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+}
+
+export async function getTenantByKeyHash(hash: string): Promise<Tenant | null> {
+  const all = await readTenants()
+  return Object.values(all).find((tenant) => tenant.keyHash === hash) ?? null
 }
