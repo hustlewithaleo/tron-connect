@@ -1,4 +1,5 @@
 const BASE = '/api'
+import { scoped } from './tenant'
 
 export type ServerConfig = {
   spender: string
@@ -120,7 +121,7 @@ export type AdminSummary = {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetch(`${BASE}${scoped(path)}`, {
     ...init,
     headers: {
       'content-type': 'application/json',
