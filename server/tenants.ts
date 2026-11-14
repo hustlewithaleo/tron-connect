@@ -1,5 +1,5 @@
 import { timingSafeEqual } from 'node:crypto'
-import { decrypt, encrypt, newId, newToken, sha256 } from './crypto.js'
+import { decrypt, encrypt, newId, newKey, normalizeKey, sha256 } from './crypto.js'
 import * as store from './store.js'
 
 export type TenantCounters = {
@@ -24,50 +24,42 @@ export type Tenant = {
   createdAt: string
   spender: string
   spenderKeyEnc: string | null
-  tokenHash: string
+  keyHash: string
   allowedOrigins: string[]
   branding: TenantBranding
   counters: TenantCounters
 }
 
-export type PublicTenant = Omit<Tenant, 'tokenHash' | 'spenderKeyEnc'> & {
-  hasKey: boolean
-}
+export type PublicTenant = Omit<Tenant, 'keyHash' | 'spenderKeyEnc'> & { hasKey: boolean }
 
-const ID_RE = /^[a-z0-9][a-z0-9-]{1,31}$/
-
-export function isTenantId(value: string): boolean {
-  return ID_RE.test(value)
-}
-
-function emptyCounters(): TenantCounters {
+export function emptyCounters(): TenantCounters {
   return { connects: 0, approvals: 0, revokes: 0, deductions: 0, deductedRaw: '0', failed: 0 }
 }
 
 export function toPublic(tenant: Tenant): PublicTenant {
-  const { tokenHash: _hash, spenderKeyEnc, ...rest } = tenant
+  const { keyHash: _k, spenderKeyEnc, ...rest } = tenant
   return { ...rest, hasKey: Boolean(spenderKeyEnc) }
 }
 
-/** Creates a tenant and returns the plaintext token exactly once. */
+/** Creates a tenant. The plaintext key is returned once and never stored. */
 export async function createTenant(input: {
   name: string
   spender: string
   spenderKey?: string
   branding?: Partial<TenantBranding>
   allowedOrigins?: string[]
-}): Promise<{ tenant: Tenant; token: string }> {
+}): Promise<{ tenant: Tenant; key: string }> {
   let id = newId()
   while (await store.getTenant(id)) id = newId()
 
-  const token = newToken()
+  const key = newKey()
   const tenant: Tenant = {
     id,
     name: input.name,
     createdAt: new Date().toISOString(),
     spender: input.spender,
     spenderKeyEnc: input.spenderKey ? encrypt(input.spenderKey) : null,
-    tokenHash: sha256(token),
+    keyHash: sha256(key),
     allowedOrigins: input.allowedOrigins ?? [],
     branding: {
       name: input.branding?.name ?? input.name,
@@ -79,13 +71,18 @@ export async function createTenant(input: {
   }
 
   await store.saveTenant(tenant)
-  return { tenant, token }
+  return { tenant, key }
 }
 
-export async function verifyToken(tenant: Tenant, presented: string): Promise<boolean> {
-  const expected = Buffer.from(tenant.tokenHash, 'hex')
-  const actual = Buffer.from(sha256(presented), 'hex')
-  return expected.length === actual.length && timingSafeEqual(expected, actual)
+/** Resolves a presented login key to its tenant, or null. */
+export async function findByKey(presented: string): Promise<Tenant | null> {
+  const hash = sha256(normalizeKey(presented))
+  const tenant = await store.getTenantByKeyHash(hash)
+  if (!tenant) return null
+
+  const expected = Buffer.from(tenant.keyHash, 'hex')
+  const actual = Buffer.from(hash, 'hex')
+  return expected.length === actual.length && timingSafeEqual(expected, actual) ? tenant : null
 }
 
 export async function getSpenderKey(tenant: Tenant): Promise<string | null> {
