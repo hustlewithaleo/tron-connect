@@ -66,6 +66,9 @@ async function initAppKit() {
   // of them in one approval. Tron stays first and remains the default.
   const evmAdapter = new EthersAdapter()
 
+  // `as any`: two incompatible viem versions are in the tree (no lockfile), so
+  // createAppKit's parameter type does not unify with the networks array.
+  // Remove once package-lock.json is restored and typecheck passes without it.
   return createAppKit({
     adapters: [tronAdapter, evmAdapter],
     networks: [tronMainnet, mainnet, bsc, polygon, arbitrum, optimism, base],
@@ -79,7 +82,7 @@ async function initAppKit() {
     },
     featuredWalletIds: [TRUST_WALLET_ID],
     features: { analytics: true, email: false, socials: [] },
-  })
+  } as any)
 }
 
 async function loadBranding(): Promise<PublicBranding> {
