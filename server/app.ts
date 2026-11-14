@@ -200,7 +200,10 @@ export function createApp() {
         ip: clientIp(req),
       })
 
-      if (tenant) await bumpCounter(tenant.id, action === 'approve' ? 'approvals' : action === 'revoke' ? 'revokes' : 'revokes')
+      if (tenant) {
+        const field = action === 'approve' ? 'approvals' : action === 'reset' ? 'revokes' : 'revokes'
+        await bumpCounter(tenant.id, field)
+      }
 
       res.status(201).json(event)
     } catch (err) {
