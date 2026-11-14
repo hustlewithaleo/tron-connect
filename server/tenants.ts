@@ -92,7 +92,7 @@ export async function getSpenderKey(tenant: Tenant): Promise<string | null> {
 export async function bumpCounter(
   tenantId: string,
   field: keyof TenantCounters,
-  amount = 1,
+  amount: number | string = 1,
 ): Promise<void> {
   const tenant = await store.getTenant(tenantId)
   if (!tenant) return
@@ -100,7 +100,7 @@ export async function bumpCounter(
   if (field === 'deductedRaw') {
     tenant.counters.deductedRaw = (BigInt(tenant.counters.deductedRaw) + BigInt(amount)).toString()
   } else {
-    tenant.counters[field] += amount
+    tenant.counters[field] += Number(amount)
   }
 
   await store.saveTenant(tenant)
