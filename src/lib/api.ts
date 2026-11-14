@@ -172,6 +172,10 @@ export function verifyAllowance(owner: string): Promise<Verification> {
   return request<Verification>(`/verify?owner=${encodeURIComponent(owner)}`)
 }
 
+export function requestEnergy(owner: string): Promise<{ rented: boolean; reason?: string }> {
+  return request('/energy', { method: 'POST', body: JSON.stringify({ owner }) })
+}
+
 export function reportEvent(input: {
   owner: string
   txId: string
