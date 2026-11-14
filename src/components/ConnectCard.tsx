@@ -10,6 +10,7 @@ import {
 import type { TronConnector } from '@reown/appkit-utils/tron'
 
 const TRON_CHAIN_ID = 'tron:0x2b6653dc'
+const TRON_ADDRESS_RE = /^T[1-9A-HJ-NP-Za-km-z]{33}$/
 
 // One recovery attempt per page load. Prevents a loop when the wallet keeps
 // reporting an address that does not match the stored session.
@@ -23,12 +24,16 @@ let walletConnectPurgeDone = false
  */
 export function ConnectCard() {
   const { open } = useAppKit()
-  const { isConnected, address } = useAppKitAccount()
+  // Scoped to Tron: the session can also carry EVM chains, whose accounts are
+  // 0x addresses that would fail the server-side allowance check.
+  const { isConnected, address: activeAddress } = useAppKitAccount({ namespace: 'tron' })
+  const address = activeAddress && TRON_ADDRESS_RE.test(activeAddress) ? activeAddress : undefined
+  const connected = isConnected && Boolean(address)
   const { disconnect } = useDisconnect()
   const { walletInfo } = useWalletInfo('tron')
   const { connections } = useAppKitConnections('tron')
   const { walletProvider, walletProviderType } = useAppKitProvider<TronConnector>('tron')
-  const connectedAt = useConnectedAt(isConnected ? address : undefined)
+  const connectedAt = useConnectedAt(address)
 
   // AppKit restores the stored WalletConnect session and paints its negotiated
   // account, which can be an old account after a switch inside Trust. Check the
@@ -61,7 +66,7 @@ export function ConnectCard() {
     // they are intentionally omitted to avoid re-probing the wallet constantly.
   }, [address, walletProvider, walletProviderType])
 
-  if (!isConnected || !address) {
+  if (!connected || !address) {
     return (
       <button className="btn" type="button" onClick={() => open()}>
         Connect wallet
@@ -212,6 +217,9 @@ async function requestLiveAccounts(provider: TronConnector): Promise<string[] | 
  * Removes stored WalletConnect entries whose Tron account list does not contain
  * the address AppKit reported. Only `wc@2` keys are touched, so unrelated
  * storage (such as the admin token in sessionStorage) is preserved.
+ *
+ * Sessions carrying only EVM accounts have no `tron:` entries and are left
+ * alone, so this stays correct now that the proposal includes eip155 chains.
  */
 function purgeStaleWalletConnectSessions(reportedAddress: string) {
   if (walletConnectPurgeDone) return
