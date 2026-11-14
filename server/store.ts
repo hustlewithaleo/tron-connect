@@ -8,6 +8,7 @@ import type { Tenant } from './tenants.js'
 
 export type VerificationRecord = {
   id: string
+  tenantId?: string
   owner: string
   spender: string
   allowance: string
@@ -18,6 +19,7 @@ export type VerificationRecord = {
 
 export type ApprovalRecord = {
   id: string
+  tenantId?: string
   owner: string
   txId: string
   action: 'approve' | 'revoke' | 'reset' | 'deduct'
@@ -146,7 +148,13 @@ function trim<T>(list: T[]): void {
   if (list.length > config.maxRecords) list.length = config.maxRecords
 }
 
+/** Legacy records (no tenantId) belong to the env-configured deployment. */
+function ownedBy(record: { tenantId?: string }, tenantId?: string): boolean {
+  return tenantId ? record.tenantId === tenantId : record.tenantId === undefined
+}
+
 export async function addVerification(input: {
+  tenantId?: string
   owner: string
   spender: string
   allowance: string
@@ -171,6 +179,7 @@ export async function addVerification(input: {
 }
 
 export async function addEvent(input: {
+  tenantId?: string
   owner: string
   txId: string
   action: ApprovalRecord['action']
@@ -206,7 +215,7 @@ export async function addEvent(input: {
   })
 }
 
-export async function summary() {
+export async function summary(tenantId?: string) {
   type WalletRow = {
     owner: string
     allowance: string | null
@@ -216,11 +225,14 @@ export async function summary() {
   }
 
   const state = await readState()
+  const verifications = state.verifications.filter((row) => ownedBy(row, tenantId))
+  const events = state.events.filter((row) => ownedBy(row, tenantId))
+
   const wallets = new Map<string, WalletRow>()
 
   // Verifications are newest first, so the first time an owner is seen is their
   // latest known allowance.
-  for (const verification of state.verifications) {
+  for (const verification of verifications) {
     const existing = wallets.get(verification.owner)
     if (existing) {
       existing.checks += 1
@@ -237,7 +249,7 @@ export async function summary() {
   }
 
   // Wallets that only reported an event still show up.
-  for (const event of state.events) {
+  for (const event of events) {
     if (!wallets.has(event.owner)) {
       wallets.set(event.owner, {
         owner: event.owner,
@@ -255,15 +267,21 @@ export async function summary() {
 
   return {
     totals: {
-      ...state.counters,
+      verifications: verifications.length,
+      events: events.length,
+      approvals: events.filter((row) => row.status === 'confirmed' && row.action === 'approve').length,
+      revokes: events.filter((row) => row.status === 'confirmed' && row.action === 'revoke').length,
+      resets: events.filter((row) => row.status === 'confirmed' && row.action === 'reset').length,
+      deductions: events.filter((row) => row.status === 'confirmed' && row.action === 'deduct').length,
+      failed: events.filter((row) => row.status === 'failed').length,
       wallets: walletList.length,
       sufficientWallets: walletList.filter((wallet) => wallet.sufficient).length,
-      retainedVerifications: state.verifications.length,
-      retainedEvents: state.events.length,
+      retainedVerifications: verifications.length,
+      retainedEvents: events.length,
     },
     wallets: walletList,
-    verifications: state.verifications.slice(0, 100),
-    events: state.events.slice(0, 100),
+    verifications: verifications.slice(0, 100),
+    events: events.slice(0, 100),
     generatedAt: new Date().toISOString(),
   }
 }
@@ -273,9 +291,9 @@ export async function exportAll(): Promise<State> {
 }
 
 /** Activity counters for one wallet, derived from the retained event log. */
-export async function walletActivity(owner: string) {
+export async function walletActivity(owner: string, tenantId?: string) {
   const state = await readState()
-  const events = state.events.filter((event) => event.owner === owner)
+  const events = state.events.filter((event) => event.owner === owner && ownedBy(event, tenantId))
   const confirmed = events.filter((event) => event.status === 'confirmed')
 
   return {
