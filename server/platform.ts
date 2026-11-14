@@ -1,6 +1,6 @@
 import { timingSafeEqual } from 'node:crypto'
 import { Router, type NextFunction, type Request, type Response } from 'express'
-import { config } from './config.js'
+import { TRON_CHAIN_ID } from './config.js'
 import { newKey, sha256 } from './crypto.js'
 import * as store from './store.js'
 import { createTenant, toPublic, type Tenant } from './tenants.js'
@@ -123,7 +123,7 @@ platformRouter.delete('/tenants/:id', async (req: Request, res: Response) => {
   res.json({ ok: true })
 })
 
-/** Public: which tenant ids exist, for embed validation. */
+/** Public: tenant metadata for the embed and the approval page. */
 export const publicTenantRouter = Router()
 
 publicTenantRouter.get('/:id', async (req: Request, res: Response) => {
@@ -138,8 +138,7 @@ publicTenantRouter.get('/:id', async (req: Request, res: Response) => {
     name: tenant.branding.name,
     description: tenant.branding.description,
     url: tenant.branding.url,
-    iconUrl: tenant.branding.icon ? `/api/branding/icon?v=${tenant.id}` : '/icon.svg',
     spender: tenant.spender,
-    network: config.tronChainId ?? 'tron:0x2b6653dc',
+    network: TRON_CHAIN_ID,
   })
 })
