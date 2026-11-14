@@ -1,3 +1,4 @@
+import type { ComponentType } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ensureAppKit } from './lib/appkit'
 import { parseRoute } from './lib/routes'
@@ -6,22 +7,30 @@ import './dash.css'
 
 const route = parseRoute(window.location.pathname)
 
+type PageProps = { tenantId?: string }
+
+async function loadPage(): Promise<ComponentType<PageProps>> {
+  switch (route.name) {
+    case 'admin':
+      return (await import('./AdminApp')).default as ComponentType<PageProps>
+    case 'platform':
+      return (await import('./Platform')).default as ComponentType<PageProps>
+    case 'dash':
+      return (await import('./Dashboard')).default as ComponentType<PageProps>
+    case 'tenant':
+      return (await import('./TenantPage')).default as ComponentType<PageProps>
+    default:
+      return (await import('./App')).default as ComponentType<PageProps>
+  }
+}
+
 async function start() {
   await ensureAppKit()
 
-  const { default: Root } =
-    route.name === 'admin'
-      ? await import('./AdminApp')
-      : route.name === 'platform'
-        ? await import('./Platform')
-        : route.name === 'dash'
-          ? await import('./Dashboard')
-          : route.name === 'tenant'
-            ? await import('./TenantPage')
-            : await import('./App')
+  const Page = await loadPage()
 
   createRoot(document.getElementById('root')!).render(
-    route.name === 'tenant' ? <Root tenantId={route.id} /> : <Root />,
+    <Page {...(route.name === 'tenant' ? { tenantId: route.id } : {})} />,
   )
 }
 
