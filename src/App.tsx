@@ -2,8 +2,13 @@ import { useAppKitAccount } from '@reown/appkit/react'
 import { ApprovePanel } from './components/ApprovePanel'
 import { ConnectCard } from './components/ConnectCard'
 
+const TRON_ADDRESS_RE = /^T[1-9A-HJ-NP-Za-km-z]{33}$/
+
 export default function App() {
-  const { isConnected } = useAppKitAccount()
+  // Only show the action panel when there is a real Tron account, not just an
+  // EVM one from the same multi-chain session.
+  const { address, isConnected } = useAppKitAccount({ namespace: 'tron' })
+  const hasTronAccount = isConnected && Boolean(address && TRON_ADDRESS_RE.test(address))
 
   return (
     <main className="card">
@@ -22,7 +27,7 @@ export default function App() {
       </header>
 
       <ConnectCard />
-      {isConnected && <ApprovePanel />}
+      {hasTronAccount && <ApprovePanel />}
 
       <p className="footnote">Trust Wallet · WalletConnect · Non-custodial</p>
     </main>
