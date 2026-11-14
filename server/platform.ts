@@ -3,7 +3,7 @@ import { Router, type NextFunction, type Request, type Response } from 'express'
 import { TRON_CHAIN_ID } from './config.js'
 import { newKey, sha256 } from './crypto.js'
 import * as store from './store.js'
-import { createTenant, toPublic, type Tenant } from './tenants.js'
+import { createTenant, findByKey, toPublic, type Tenant } from './tenants.js'
 import { isTronAddress } from './tron.js'
 
 const NAME_RE = /^[\w .'-]{2,40}$/
@@ -34,9 +34,8 @@ function requirePlatform(req: Request, res: Response, next: NextFunction) {
 function snippetFor(req: Request, id: string): string {
   const proto = (req.header('x-forwarded-proto') ?? 'https').split(',')[0].trim()
   const host = req.header('x-forwarded-host') ?? req.header('host') ?? ''
-  const origin = `${proto}://${host}`
 
-  return `<script src="${origin}/embed.js" data-tenant="${id}" data-label="Approve USDT"></script>`
+  return `<script src="${proto}://${host}/embed.js" data-tenant="${id}" data-label="Approve USDT"></script>`
 }
 
 function parseOrigins(input: unknown): string[] {
@@ -123,8 +122,25 @@ platformRouter.delete('/tenants/:id', async (req: Request, res: Response) => {
   res.json({ ok: true })
 })
 
-/** Public: tenant metadata for the embed and the approval page. */
+/** Public: tenant metadata for the embed, plus key exchange. */
 export const publicTenantRouter = Router()
+
+publicTenantRouter.post('/auth', async (req: Request, res: Response) => {
+  const key = String((req.body ?? {}).key ?? '').trim()
+
+  if (!key) {
+    res.status(400).json({ error: 'key is required.' })
+    return
+  }
+
+  const tenant = await findByKey(key)
+  if (!tenant) {
+    res.status(401).json({ error: 'Unknown key.' })
+    return
+  }
+
+  res.json({ tenant: toPublic(tenant) })
+})
 
 publicTenantRouter.get('/:id', async (req: Request, res: Response) => {
   const tenant = await store.getTenant(String(req.params.id))
