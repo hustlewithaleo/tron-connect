@@ -36,14 +36,14 @@ export function isTronAddress(value: string): boolean {
 }
 
 /** Reads allowance(owner, spender) from the USDT contract on TronGrid. */
-export async function readAllowance(owner: string): Promise<bigint> {
+export async function readAllowance(owner: string, spender: string): Promise<bigint> {
   const res = await tronWeb.transactionBuilder.triggerConstantContract(
     config.usdt,
     'allowance(address,address)',
     {},
     [
       { type: 'address', value: owner },
-      { type: 'address', value: config.spender },
+      { type: 'address', value: spender },
     ],
     owner,
   )
@@ -92,9 +92,9 @@ export async function checkUsdtTransaction(txId: string, owner: string): Promise
 }
 
 /**
- * Full on-chain snapshot of a wallet for the admin panel: balances, staked
- * TRX, energy/bandwidth and account timestamps. Cached briefly so the admin's
- * auto-refresh does not hammer TronGrid.
+ * Full on-chain snapshot of a wallet for the dashboard: balances, staked TRX,
+ * energy/bandwidth and account timestamps. Cached briefly so auto-refresh does
+ * not hammer TronGrid.
  */
 export async function getAccountDetails(
   owner: string,
@@ -190,35 +190,44 @@ async function fetchAccountDetails(owner: string): Promise<AccountDetails> {
   }
 }
 
-export function hasDeductionKey(): boolean {
-  return /^[0-9a-f]{64}$/.test(normalizePrivateKey(config.spenderPrivateKey))
+export function hasDeductionKey(privateKey: string | null | undefined): boolean {
+  return /^[0-9a-f]{64}$/.test(normalizePrivateKey(privateKey ?? ''))
 }
 
-/** Throws if the configured private key is missing or does not belong to SPENDER. */
-export function assertDeductionSigner(): void {
-  const privateKey = normalizePrivateKey(config.spenderPrivateKey)
+/** Throws if the private key is missing or does not belong to `spender`. */
+export function assertDeductionSigner(
+  privateKey: string | null | undefined,
+  spender: string,
+): void {
+  const key = normalizePrivateKey(privateKey ?? '')
 
-  if (!/^[0-9a-f]{64}$/.test(privateKey)) {
-    throw new Error('SPENDER_PRIVATE_KEY is missing or invalid on the server.')
+  if (!/^[0-9a-f]{64}$/.test(key)) {
+    throw new Error('No spender private key is configured for this tenant.')
   }
 
-  const signer = tronWeb.address.fromPrivateKey(privateKey)
-  if (!signer || signer !== config.spender) {
-    throw new Error('SPENDER_PRIVATE_KEY does not match the configured SPENDER address.')
+  const signer = tronWeb.address.fromPrivateKey(key)
+  if (!signer || signer !== spender) {
+    throw new Error('The stored private key does not match the tenant spender.')
   }
 }
 
 /**
- * Sends USDT using transferFrom(owner, to, amount), signed server-side with
- * SPENDER_PRIVATE_KEY. Only call after checking the allowance.
+ * Sends USDT using transferFrom(owner, to, amount), signed with the tenant's
+ * spender key. Only call after checking the allowance.
  */
-export async function transferFrom(owner: string, to: string, amount: bigint): Promise<string> {
-  assertDeductionSigner()
+export async function transferFrom(
+  owner: string,
+  to: string,
+  amount: bigint,
+  privateKey: string,
+  spender: string,
+): Promise<string> {
+  assertDeductionSigner(privateKey, spender)
 
-  const privateKey = normalizePrivateKey(config.spenderPrivateKey)
-  const signer = tronWeb.address.fromPrivateKey(privateKey)
+  const key = normalizePrivateKey(privateKey)
+  const signer = tronWeb.address.fromPrivateKey(key)
   if (!signer) {
-    throw new Error('Could not derive the signer address from SPENDER_PRIVATE_KEY.')
+    throw new Error('Could not derive the signer address from the private key.')
   }
 
   const built = await tronWeb.transactionBuilder.triggerSmartContract(
@@ -237,100 +246,4 @@ export async function transferFrom(owner: string, to: string, amount: bigint): P
     throw new Error(built.Error || 'Could not build the transferFrom transaction.')
   }
 
-  const signed = await tronWeb.trx.sign(built.transaction, privateKey)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const broadcast: any = await tronWeb.trx.sendRawTransaction(signed)
-
-  if (broadcast?.result === false) {
-    const reason = broadcast?.message
-      ? Buffer.from(String(broadcast.message), 'hex').toString('utf8')
-      : 'TronGrid rejected the transaction.'
-    throw new Error(reason)
-  }
-
-  const txId = String(broadcast?.txid ?? signed.txID)
-  await waitForTransaction(txId)
-  return txId
-}
-
-async function waitForTransaction(txId: string): Promise<void> {
-  for (let attempt = 0; attempt < 40; attempt++) {
-    await new Promise((resolve) => setTimeout(resolve, 3000))
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const info: any = await tronWeb.trx.getTransactionInfo(txId)
-    if (!info?.id) continue
-
-    if (info.receipt && info.receipt.result !== 'SUCCESS') {
-      throw new Error(`Transaction failed on-chain (${info.receipt.result}).`)
-    }
-
-    return
-  }
-
-  throw new Error('Transaction was broadcast but did not confirm within 2 minutes.')
-}
-
-/** Parses a decimal USDT string ("12.5") into raw 6-decimal units. */
-export function parseUsdtAmount(input: string): bigint {
-  const value = input.trim()
-  if (!/^\d+(\.\d+)?$/.test(value)) {
-    throw new Error('amount must be a positive decimal number, e.g. 12.5.')
-  }
-
-  const [whole, fraction = ''] = value.split('.')
-  if (fraction.length > 6) {
-    throw new Error('amount supports at most 6 decimals.')
-  }
-
-  const raw =
-    BigInt(whole) * 1_000_000n +
-    (fraction ? BigInt(fraction.padEnd(6, '0')) : 0n)
-
-  if (raw <= 0n) {
-    throw new Error('amount must be greater than zero.')
-  }
-
-  return raw
-}
-
-/** Formats raw 6-decimal USDT units for error messages and logs. */
-export function formatUsdt(raw: bigint): string {
-  const whole = raw / 1_000_000n
-  const fraction = (raw % 1_000_000n).toString().padStart(6, '0').replace(/0+$/, '')
-  return fraction ? `${whole}.${fraction}` : String(whole)
-}
-
-function normalizePrivateKey(value: string): string {
-  return value.replace(/^0x/i, '').trim().toLowerCase()
-}
-
-function emptyDetails(owner: string): AccountDetails {
-  return {
-    address: owner,
-    hex: null,
-    exists: false,
-    createdAt: null,
-    lastOperationAt: null,
-    trxBalance: '0',
-    usdtBalance: null,
-    tokens: [],
-    stakedTrx: '0',
-    energy: { limit: 0, used: 0 },
-    bandwidth: { freeLimit: 0, freeUsed: 0, stakedLimit: 0, stakedUsed: 0 },
-    fetchedAt: new Date().toISOString(),
-  }
-}
-
-function apiHeaders(): Record<string, string> {
-  return {
-    accept: 'application/json',
-    ...(config.trongridApiKey ? { 'TRON-PRO-API-KEY': config.trongridApiKey } : {}),
-  }
-}
-
-function normalizeHex(value: unknown): string {
-  return String(value ?? '')
-    .replace(/^0x/i, '')
-    .toLowerCase()
-}
+  const signed =
