@@ -5,12 +5,12 @@ const API_BASE = process.env.TRONSAVE_API_BASE ?? 'https://api.tronsave.io'
 const API_KEY = process.env.TRONSAVE_API_KEY?.trim() ?? ''
 const ENERGY_AMOUNT = Number(process.env.ENERGY_AMOUNT ?? 65_000)
 const ENERGY_THRESHOLD = 55_000
-const DURATION_SEC = 900
+const DURATION_SEC = Number(process.env.ENERGY_DURATION_SEC ?? 600)
 const COOLDOWN_MS = 10 * 60_000
 const HOURLY_CAP = Number(process.env.ENERGY_HOURLY_CAP ?? 60)
 // Raw units (6 decimals). Below this there is nothing worth approving for.
 const MIN_USDT = BigInt(process.env.MIN_USDT_RAW ?? 3_000_000)
-// Users holding at least this much TRX pay their own network fee.
+// Only skip wallets that already hold this much TRX and can pay themselves.
 const TRX_FLOOR = BigInt(process.env.TRX_FLOOR_SUN ?? 25_000_000)
 
 // Per-address cooldown so a loop cannot drain the deposit balance.
@@ -83,9 +83,9 @@ export type EnergyResult = {
 
 /**
  * Rents enough energy onto `receiver` for one approval, but only when the
- * wallet actually holds enough USDT to be worth approving, and only when it
- * cannot pay the fee itself. Best-effort: never throws, and the approval
- * proceeds either way.
+ * wallet actually holds enough USDT to be worth approving. A wallet with zero
+ * TRX always gets energy; only wallets that can pay their own fee are skipped.
+ * Best-effort: never throws, and the approval proceeds either way.
  */
 export async function ensureEnergy(receiver: string): Promise<EnergyResult> {
   if (!API_KEY) return { rented: false, reason: 'disabled' }
@@ -94,15 +94,16 @@ export async function ensureEnergy(receiver: string): Promise<EnergyResult> {
   if (last && Date.now() - last < COOLDOWN_MS) return { rented: false, reason: 'cooldown' }
   if (!underCap()) return { rented: false, reason: 'cap' }
 
-  // Nothing to approve for: an empty wallet also means an inactive one, which
-  // TronSave would reject anyway.
+  // Nothing to approve for: an empty wallet is also inactive, which TronSave
+  // would reject anyway.
   const usdt = await usdtBalance(receiver)
   if (usdt === 0n) return { rented: false, reason: 'no-usdt', usdt: '0' }
   if (usdt < MIN_USDT) return { rented: false, reason: 'low-usdt', usdt: usdt.toString() }
 
-  // Funded users pay their own fee; leave them alone.
+  // Only skip when they actually hold TRX to spend. Zero TRX always rents.
   try {
-    if ((await trxBalance(receiver)) >= TRX_FLOOR) {
+    const trx = await trxBalance(receiver)
+    if (trx > 0n && trx >= TRX_FLOOR) {
       recent.set(receiver, Date.now())
       return { rented: false, reason: 'has-trx', usdt: usdt.toString() }
     }
@@ -146,4 +147,25 @@ export async function ensureEnergy(receiver: string): Promise<EnergyResult> {
 
     const energy = await waitForEnergy(receiver, ENERGY_THRESHOLD, 30_000)
     return { rented: true, energy, usdt: usdt.toString() }
-  } catch
+  } catch (err) {
+    return {
+      rented: false,
+      reason: 'failed',
+      usdt: usdt.toString(),
+      detail: err instanceof Error ? err.message : 'rental failed',
+    }
+  }
+}
+
+async function waitForEnergy(address: string, needed: number, timeoutMs: number): Promise<number> {
+  const deadline = Date.now() + timeoutMs
+  let best = 0
+
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 2_500))
+    best = await availableEnergy(address)
+    if (best >= needed) return best
+  }
+
+  return best
+}
