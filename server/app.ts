@@ -245,20 +245,13 @@ export function createApp() {
       return
     }
 
+    // Format is still enforced (bare http/https origin); the value no longer
+    // has to be the current origin or an ALLOWED_ORIGINS entry.
     let url: string | null = null
     if (rawUrl) {
       url = normalizeOrigin(rawUrl)
       if (!url) {
         res.status(400).json({ error: 'url must be a bare http(s) origin, e.g. https://app.example.com.' })
-        return
-      }
-
-      const currentOrigin = requestOrigin(req)
-      const allowed = allowedOriginsFor(currentOrigin)
-      if (!allowed.includes(url)) {
-        res.status(400).json({
-          error: `url must match the origin you are using or an ALLOWED_ORIGINS entry. Allowed: ${allowed.join(', ') || '(none)'}`,
-        })
         return
       }
     }
