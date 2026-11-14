@@ -4,6 +4,7 @@ import { config, TRON_CHAIN_ID } from './config.js'
 import { energyRentalEnabled, ensureEnergy } from './energy.js'
 import { platformRouter, publicTenantRouter } from './platform.js'
 import * as store from './store.js'
+import { resolveTenant } from './tenantAuth.js'
 import {
   assertDeductionSigner,
   checkUsdtTransaction,
@@ -35,6 +36,10 @@ export function createApp() {
     res.setHeader('cache-control', 'no-store')
     next()
   })
+
+  // Attaches the calling tenant from a bearer key or ?t=<id>. Endpoints decide
+  // whether one is required; nothing is scoped yet at this stage.
+  app.use('/api', resolveTenant)
 
   app.get('/api/health', (_req, res) => {
     res.json({
