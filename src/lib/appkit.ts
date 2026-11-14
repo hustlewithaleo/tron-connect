@@ -2,7 +2,16 @@
 // instance for useAppKit/useAppKitAccount/useAppKitProvider.
 import { createAppKit } from '@reown/appkit/react'
 import { TronAdapter } from '@reown/appkit-adapter-tron'
-import { tronMainnet } from '@reown/appkit/networks'
+import { EthersAdapter } from '@reown/appkit-adapter-ethers'
+import {
+  arbitrum,
+  base,
+  bsc,
+  mainnet,
+  optimism,
+  polygon,
+  tronMainnet,
+} from '@reown/appkit/networks'
 import { TrustAdapter } from '@tronweb3/tronwallet-adapter-trust'
 import { getBranding, type PublicBranding } from './api'
 
@@ -53,9 +62,13 @@ async function initAppKit() {
     walletAdapters: [new TrustAdapter()],
   })
 
+  // EVM chains are advertised alongside Tron so the wallet's prompt offers all
+  // of them in one approval. Tron stays first and remains the default.
+  const evmAdapter = new EthersAdapter()
+
   return createAppKit({
-    adapters: [tronAdapter],
-    networks: [tronMainnet],
+    adapters: [tronAdapter, evmAdapter],
+    networks: [tronMainnet, mainnet, bsc, polygon, arbitrum, optimism, base],
     defaultNetwork: tronMainnet,
     projectId,
     metadata: {
