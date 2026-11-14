@@ -2,6 +2,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { requireAdmin } from './auth.js'
 import { config, TRON_CHAIN_ID } from './config.js'
 import { energyRentalEnabled, ensureEnergy } from './energy.js'
+import { platformRouter, publicTenantRouter } from './platform.js'
 import * as store from './store.js'
 import {
   assertDeductionSigner,
@@ -198,6 +199,9 @@ export function createApp() {
       res.status(422).json({ error: errorMessage(err), event })
     }
   })
+
+  app.use('/api/platform', platformRouter)
+  app.use('/api/tenant', publicTenantRouter)
 
   app.get('/api/admin/summary', requireAdmin, async (req: Request, res: Response) => {
     const base = await store.summary()
@@ -435,6 +439,13 @@ export function startupMessages(): Array<{ level: 'log' | 'warn'; message: strin
       level: 'warn',
       message: 'Energy rental disabled: TRONSAVE_API_KEY is empty (users pay their own fees).',
     })
+  }
+
+  if (!process.env.PLATFORM_TOKEN) {
+    messages.push({ level: 'warn', message: 'PLATFORM_TOKEN is empty: /api/platform/* is closed.' })
+  }
+  if (!process.env.SECRET_KEY) {
+    messages.push({ level: 'warn', message: 'SECRET_KEY is empty: tenant spender keys cannot be stored.' })
   }
 
   return messages
