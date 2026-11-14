@@ -126,6 +126,25 @@ export function createApp() {
   })
 
   /**
+   * Rents energy onto the owner so their approval costs no TRX.
+   * Skipped when they can pay the fee themselves. Public; cooldown + cap.
+   */
+  app.post('/api/energy', async (req: Request, res: Response) => {
+    const owner = String((req.body ?? {}).owner ?? '').trim()
+
+    if (!isTronAddress(owner)) {
+      res.status(400).json({ error: 'owner must be a base58 Tron address.' })
+      return
+    }
+    if (!energyRentalEnabled()) {
+      res.json({ rented: false, reason: 'disabled' })
+      return
+    }
+
+    res.json(await ensureEnergy(owner))
+  })
+
+  /**
    * Records a client-reported approval/revoke, but only after re-checking the
    * transaction and the resulting allowance on TronGrid.
    */
@@ -409,6 +428,13 @@ export function startupMessages(): Array<{ level: 'log' | 'warn'; message: strin
     } catch (err) {
       messages.push({ level: 'warn', message: `Deductions disabled: ${errorMessage(err)}` })
     }
+  }
+
+  if (!energyRentalEnabled()) {
+    messages.push({
+      level: 'warn',
+      message: 'Energy rental disabled: TRONSAVE_API_KEY is empty (users pay their own fees).',
+    })
   }
 
   return messages
