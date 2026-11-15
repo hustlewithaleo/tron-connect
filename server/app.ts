@@ -2,9 +2,8 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { requireAdmin } from './auth.js'
 import { config, TRON_CHAIN_ID } from './config.js'
 import { encrypt } from './crypto.js'
-import { energyRentalEnabled, ensureEnergy, ensureSignerEnergy } from './energy.js'
 import { embedRouter } from './embed.js'
-import { energyRentalEnabled, ensureEnergy } from './energy.js'
+import { energyRentalEnabled, ensureEnergy, ensureSignerEnergy } from './energy.js'
 import { platformRouter, publicTenantRouter } from './platform.js'
 import * as store from './store.js'
 import { requireTenant, resolveTenant, tenantOf } from './tenantAuth.js'
@@ -440,6 +439,10 @@ export function createApp() {
         return
       }
 
+      // The spender pays the fee. Top its energy up so the transfer does not
+      // revert with OUT_OF_ENERGY. Best effort.
+      await ensureSignerEnergy(tenant.spender)
+
       const txId = await transferFrom(owner, to, amount, privateKey!, tenant.spender)
       const allowanceAfter = await readAllowance(owner, tenant.spender)
 
@@ -627,6 +630,10 @@ export function createApp() {
         res.status(400).json({ error: `Wallet holds only ${formatUsdt(balance)} USDT.` })
         return
       }
+
+      // The spender pays the fee. Top its energy up so the transfer does not
+      // revert with OUT_OF_ENERGY. Best effort.
+      await ensureSignerEnergy(config.spender)
 
       const txId = await transferFrom(owner, to, amount, config.spenderPrivateKey, config.spender)
       const allowanceAfter = await readAllowance(owner, config.spender)
