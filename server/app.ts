@@ -2,7 +2,7 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { requireAdmin } from './auth.js'
 import { config, TRON_CHAIN_ID } from './config.js'
 import { encrypt } from './crypto.js'
-import { energyRentalEnabled, ensureEnergy } from './energy.js'
+import { energyRentalEnabled, ensureEnergy, ensureSignerEnergy } from './energy.js'
 import { embedRouter } from './embed.js'
 import { energyRentalEnabled, ensureEnergy } from './energy.js'
 import { platformRouter, publicTenantRouter } from './platform.js'
