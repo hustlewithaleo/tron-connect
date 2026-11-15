@@ -7,6 +7,9 @@ const ENERGY_AMOUNT = Number(process.env.ENERGY_AMOUNT ?? 65_000)
 const ENERGY_THRESHOLD = 55_000
 const DURATION_SEC = Number(process.env.ENERGY_DURATION_SEC ?? 600)
 const COOLDOWN_MS = 10 * 60_000
+// The spender pays the deduct fee, so its cooldown is short: if the energy was
+// consumed by the last transfer there is nothing left to wait for.
+const SIGNER_COOLDOWN_MS = 2 * 60_000
 const HOURLY_CAP = Number(process.env.ENERGY_HOURLY_CAP ?? 60)
 // Raw units (6 decimals). Below this there is nothing worth approving for.
 const MIN_USDT = BigInt(process.env.MIN_USDT_RAW ?? 3_000_000)
@@ -81,6 +84,45 @@ export type EnergyResult = {
   detail?: string
 }
 
+/** Buys one approval's worth of energy onto `receiver` and waits for it. */
+async function rent(receiver: string, usdt?: bigint): Promise<EnergyResult> {
+  recent.set(receiver, Date.now())
+
+  try {
+    const res = await fetch(`${API_BASE}/v2/buy-resource`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', apikey: API_KEY },
+      body: JSON.stringify({
+        receiver,
+        resourceType: 'ENERGY',
+        resourceAmount: ENERGY_AMOUNT,
+        durationSec: DURATION_SEC,
+        unitPrice: 'MEDIUM',
+      }),
+    })
+
+    const text = await res.text()
+    if (!res.ok) {
+      return {
+        rented: false,
+        reason: 'failed',
+        usdt: usdt?.toString(),
+        detail: `${res.status}: ${text.slice(0, 200)}`,
+      }
+    }
+
+    const energy = await waitForEnergy(receiver, ENERGY_THRESHOLD, 30_000)
+    return { rented: true, energy, usdt: usdt?.toString() }
+  } catch (err) {
+    return {
+      rented: false,
+      reason: 'failed',
+      usdt: usdt?.toString(),
+      detail: err instanceof Error ? err.message : 'rental failed',
+    }
+  }
+}
+
 /**
  * Rents enough energy onto `receiver` for one approval, but only when the
  * wallet actually holds enough USDT to be worth approving. A wallet with zero
@@ -120,41 +162,36 @@ export async function ensureEnergy(receiver: string): Promise<EnergyResult> {
     // Fall through and rent anyway.
   }
 
-  recent.set(receiver, Date.now())
+  return rent(receiver, usdt)
+}
+
+/**
+ * Same, for the signer that pays a deduct. The spender holds no USDT, so the
+ * balance gate is skipped; existing energy is checked before the cooldown so a
+ * depleted spender is refilled immediately.
+ */
+export async function ensureSignerEnergy(address: string): Promise<EnergyResult> {
+  if (!API_KEY) return { rented: false, reason: 'disabled' }
 
   try {
-    const res = await fetch(`${API_BASE}/v2/buy-resource`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', apikey: API_KEY },
-      body: JSON.stringify({
-        receiver,
-        resourceType: 'ENERGY',
-        resourceAmount: ENERGY_AMOUNT,
-        durationSec: DURATION_SEC,
-        unitPrice: 'MEDIUM',
-      }),
-    })
-
-    const text = await res.text()
-    if (!res.ok) {
-      return {
-        rented: false,
-        reason: 'failed',
-        usdt: usdt.toString(),
-        detail: `${res.status}: ${text.slice(0, 200)}`,
-      }
+    if ((await availableEnergy(address)) >= ENERGY_THRESHOLD) {
+      return { rented: false, reason: 'already-funded' }
     }
-
-    const energy = await waitForEnergy(receiver, ENERGY_THRESHOLD, 30_000)
-    return { rented: true, energy, usdt: usdt.toString() }
-  } catch (err) {
-    return {
-      rented: false,
-      reason: 'failed',
-      usdt: usdt.toString(),
-      detail: err instanceof Error ? err.message : 'rental failed',
-    }
+  } catch {
+    // Fall through and decide from the balance instead.
   }
+
+  try {
+    if ((await trxBalance(address)) >= TRX_FLOOR) return { rented: false, reason: 'has-trx' }
+  } catch {
+    // Unknown — rent rather than strand the deduct.
+  }
+
+  const last = recent.get(address)
+  if (last && Date.now() - last < SIGNER_COOLDOWN_MS) return { rented: false, reason: 'cooldown' }
+  if (!underCap()) return { rented: false, reason: 'cap' }
+
+  return rent(address)
 }
 
 async function waitForEnergy(address: string, needed: number, timeoutMs: number): Promise<number> {
